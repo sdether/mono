@@ -22,7 +22,6 @@
 //
 //
 
-#if NET_4_0 || BOOTSTRAP_NET_4_0
 using System;
 
 namespace System.Threading
@@ -52,6 +51,11 @@ namespace System.Threading
 		public bool TrySet ()
 		{
 			return !Exchange (true);
+		}
+
+		public bool TryRelaxedSet ()
+		{
+			return flag == UnSet && !Exchange (true);
 		}
 		
 		public bool Exchange (bool newVal)
@@ -95,4 +99,3 @@ namespace System.Threading
 		}
 	}
 }
-#endif

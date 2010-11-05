@@ -145,7 +145,6 @@ mono_get_throw_corlib_exception (void)
 	if (throw_corlib_exception_func)
 		return throw_corlib_exception_func;
 
-#if MONO_ARCH_HAVE_THROW_CORLIB_EXCEPTION
 	if (mono_aot_only)
 		code = mono_aot_get_trampoline ("throw_corlib_exception");
 	else {
@@ -155,9 +154,6 @@ mono_get_throw_corlib_exception (void)
 			mono_tramp_info_free (info);
 		}
 	}
-#else
-	g_assert_not_reached ();
-#endif
 
 	mono_memory_barrier ();
 
@@ -770,6 +766,19 @@ mono_jit_walk_stack_from_ctx_in_thread (MonoJitStackWalk func, MonoDomain *domai
 			il_offset = -1;
 
 		frame.il_offset = il_offset;
+
+		if (frame.ji) {
+			if (frame.ji->has_generic_jit_info && frame.type == FRAME_TYPE_MANAGED_TO_NATIVE) {
+				/*
+				 * FIXME: These frames show up twice, and ctx could refer to native code.
+				 */
+				ctx = new_ctx;
+				continue;
+			}
+			frame.actual_method = get_method_from_stack_frame (frame.ji, get_generic_info_from_stack_frame (frame.ji, &ctx));
+		} else {
+			frame.actual_method = frame.method;
+		}
 
 		if (func (&frame, &ctx, user_data))
 			return;

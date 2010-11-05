@@ -453,19 +453,15 @@ los_sweep (void)
 
 #ifdef SGEN_HAVE_CARDTABLE
 
-static void __attribute__((noinline))
-los_clear_card_table (void)
+static void
+los_iterate_live_block_ranges (sgen_cardtable_block_callback callback)
 {
 	LOSObject *obj;
-	LOSSection *section;
 	for (obj = los_object_list; obj; obj = obj->next) {
-		if (obj->huge_object)
-			sgen_card_table_reset_region ((mword)obj->data, (mword)obj->data + obj->size);
+		MonoVTable *vt = (MonoVTable*)LOAD_VTABLE (obj->data);
+		if (vt->klass->has_references)
+			callback ((mword)obj->data, (mword)obj->size);
 	}
-
-	for (section = los_sections; section; section = section->next)
-		sgen_card_table_reset_region ((mword)section, (mword)section + LOS_SECTION_SIZE);
-
 }
 
 #define ARRAY_OBJ_INDEX(ptr,array,elem_size) (((char*)(ptr) - ((char*)(array) + G_STRUCT_OFFSET (MonoArray, vector))) / (elem_size))
@@ -493,16 +489,11 @@ los_scan_card_table (GrayQueue *queue)
 
 			for (; start <= end; start += CARD_SIZE_IN_BYTES) {
 				char *elem, *card_end;
-				guint8 *card_addr;
 				uintptr_t index;
-				card_addr = sgen_card_table_get_card_address ((mword)start);
 
-				if (!*card_addr) {
-					//++card_ignored;
+				if (!sgen_card_table_card_begin_scanning ((mword)start))
 					continue;
-				}
 
-				*card_addr = 0;
 				card_end = start + CARD_SIZE_IN_BYTES;
 				if (end < card_end)
 					card_end = end;
@@ -515,14 +506,14 @@ los_scan_card_table (GrayQueue *queue)
 				elem = (char*)mono_array_addr_with_size ((MonoArray*)obj->data, size, index);
 				if (klass->element_class->valuetype) {
 					while (elem < card_end) {
-						major.minor_scan_vtype (elem, desc, nursery_start, nursery_next, queue);
+						major_collector.minor_scan_vtype (elem, desc, nursery_start, nursery_next, queue);
 						elem += size;
 					}
 				} else {
 					while (elem < card_end) {
 						gpointer new, old = *(gpointer*)elem;
 						if (old) {
-							major.copy_object ((void**)elem, queue);
+							major_collector.copy_object ((void**)elem, queue);
 							new = *(gpointer*)elem;
 							if (G_UNLIKELY (ptr_in_nursery (new)))
 								mono_sgen_add_to_global_remset (elem);
@@ -532,10 +523,8 @@ los_scan_card_table (GrayQueue *queue)
 				}
 			}
 		} else {
-			if (sgen_card_table_is_region_marked ((mword)obj->data, (mword)obj->data + obj->size)) {
-				sgen_card_table_reset_region ((mword)obj->data, (mword)obj->data + obj->size);
-				major.minor_scan_object (obj->data, queue);
-			}
+			if (sgen_card_table_region_begin_scanning ((mword)obj->data, (mword)obj->size))
+				major_collector.minor_scan_object (obj->data, queue);
 		}
 	}
 }

@@ -38,6 +38,7 @@ namespace Mono.CSharp {
 	public class CodeGen {
 		static AppDomain current_domain;
 
+		// Breaks dynamic and repl
 		public static AssemblyClass Assembly;
 
 		static CodeGen ()
@@ -107,7 +108,7 @@ namespace Mono.CSharp {
 			if (an.KeyPair != null) {
 				// If we are going to strong name our assembly make
 				// sure all its refs are strong named
-				foreach (Assembly a in GlobalRootNamespace.Instance.Assemblies) {
+				foreach (Assembly a in ctx.GlobalRootNamespace.Assemblies) {
 					AssemblyName ref_name = a.GetName ();
 					byte [] b = ref_name.GetPublicKeyToken ();
 					if (b == null || b.Length == 0) {
@@ -183,15 +184,15 @@ namespace Mono.CSharp {
 
 			switch (RootContext.Platform) {
 			case Platform.X86:
-				pekind = PortableExecutableKinds.Required32Bit;
+				pekind = PortableExecutableKinds.Required32Bit | PortableExecutableKinds.ILOnly;
 				machine = ImageFileMachine.I386;
 				break;
 			case Platform.X64:
-				pekind = PortableExecutableKinds.PE32Plus;
+				pekind = PortableExecutableKinds.ILOnly;
 				machine = ImageFileMachine.AMD64;
 				break;
 			case Platform.IA64:
-				pekind = PortableExecutableKinds.PE32Plus;
+				pekind = PortableExecutableKinds.ILOnly;
 				machine = ImageFileMachine.IA64;
 				break;
 			case Platform.AnyCPU:
@@ -294,6 +295,8 @@ namespace Mono.CSharp {
 		
 		public readonly IMemberContext MemberContext;
 
+		DynamicSiteClass dynamic_site_container;
+
 		public EmitContext (IMemberContext rc, ILGenerator ig, TypeSpec return_type)
 		{
 			this.MemberContext = rc;
@@ -387,6 +390,25 @@ namespace Mono.CSharp {
 		{
 			ig.EndScope();
 			SymbolWriter.CloseScope(ig);
+		}
+
+		//
+		// Creates a nested container in this context for all dynamic compiler generated stuff
+		//
+		public DynamicSiteClass CreateDynamicSite ()
+		{
+			if (dynamic_site_container == null) {
+				var mc = MemberContext.CurrentMemberDefinition as MemberBase;
+				dynamic_site_container = new DynamicSiteClass (CurrentTypeDefinition.Parent.PartialContainer, mc, CurrentTypeParameters);
+
+				RootContext.ToplevelTypes.AddCompilerGeneratedClass (dynamic_site_container);
+				dynamic_site_container.CreateType ();
+				dynamic_site_container.DefineType ();
+				dynamic_site_container.ResolveTypeParameters ();
+				dynamic_site_container.Define ();
+			}
+
+			return dynamic_site_container;
 		}
 
 		public LocalBuilder DeclareLocal (TypeSpec type, bool pinned)
@@ -991,7 +1013,7 @@ namespace Mono.CSharp {
 				Arguments named = new Arguments (1);
 				named.Add (new NamedArgument ("SkipVerification", loc, new BoolLiteral (true, loc)));
 
-				GlobalAttribute g = new GlobalAttribute (new NamespaceEntry (null, null, null), "assembly",
+				GlobalAttribute g = new GlobalAttribute (new NamespaceEntry (Compiler, null, null, null), "assembly",
 					new MemberAccess (system_security_permissions, "SecurityPermissionAttribute"),
 					new Arguments[] { pos, named }, loc, false);
 				g.AttachTo (this, this);
@@ -1009,13 +1031,13 @@ namespace Mono.CSharp {
 			if (!OptAttributes.CheckTargets())
 				return;
 
-			ClsCompliantAttribute = ResolveAttribute (PredefinedAttributes.Get.CLSCompliant);
+			ClsCompliantAttribute = ResolveAttribute (Compiler.PredefinedAttributes.CLSCompliant);
 
 			if (ClsCompliantAttribute != null) {
 				is_cls_compliant = ClsCompliantAttribute.GetClsCompliantAttributeValue ();
 			}
 
-			Attribute a = ResolveAttribute (PredefinedAttributes.Get.RuntimeCompatibility);
+			Attribute a = ResolveAttribute (Compiler.PredefinedAttributes.RuntimeCompatibility);
 			if (a != null) {
 				var val = a.GetPropertyValue ("WrapNonExceptionThrows") as BoolConstant;
 				if (val != null)
@@ -1260,7 +1282,7 @@ namespace Mono.CSharp {
 
 				try {
 					var fi = typeof (AssemblyBuilder).GetField ("culture", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.SetField);
-					fi.SetValue (CodeGen.Assembly.Builder, value == "neutral" ? "" : value);
+					fi.SetValue (Builder, value == "neutral" ? "" : value);
 				} catch {
 					Report.RuntimeMissingSupport (a.Location, "AssemblyCultureAttribute setting");
 				}
@@ -1281,7 +1303,7 @@ namespace Mono.CSharp {
 
 				try {
 					var fi = typeof (AssemblyBuilder).GetField ("version", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.SetField);
-					fi.SetValue (CodeGen.Assembly.Builder, vinfo);
+					fi.SetValue (Builder, vinfo);
 				} catch {
 					Report.RuntimeMissingSupport (a.Location, "AssemblyVersionAttribute setting");
 				}
@@ -1298,7 +1320,7 @@ namespace Mono.CSharp {
 
 				try {
 					var fi = typeof (AssemblyBuilder).GetField ("algid", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.SetField);
-					fi.SetValue (CodeGen.Assembly.Builder, alg);
+					fi.SetValue (Builder, alg);
 				} catch {
 					Report.RuntimeMissingSupport (a.Location, "AssemblyAlgorithmIdAttribute setting");
 				}
@@ -1314,12 +1336,12 @@ namespace Mono.CSharp {
 				flags |= ((uint) cdata[pos + 3]) << 24;
 
 				// Ignore set PublicKey flag if assembly is not strongnamed
-				if ((flags & (uint) AssemblyNameFlags.PublicKey) != 0 && (CodeGen.Assembly.Builder.GetName ().KeyPair == null))
+				if ((flags & (uint) AssemblyNameFlags.PublicKey) != 0 && (Builder.GetName ().KeyPair == null))
 					flags &= ~(uint)AssemblyNameFlags.PublicKey;
 
 				try {
 					var fi = typeof (AssemblyBuilder).GetField ("flags", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.SetField);
-					fi.SetValue (CodeGen.Assembly.Builder, flags);
+					fi.SetValue (Builder, flags);
 				} catch {
 					Report.RuntimeMissingSupport (a.Location, "AssemblyFlagsAttribute setting");
 				}
@@ -1388,13 +1410,13 @@ namespace Mono.CSharp {
 			base.Emit (tc);
 
 			if (has_extension_method)
-				PredefinedAttributes.Get.Extension.EmitAttribute (Builder);
+				Compiler.PredefinedAttributes.Extension.EmitAttribute (Builder);
 
-			// FIXME: Does this belong inside SRE.AssemblyBuilder instead?
-			PredefinedAttribute pa = PredefinedAttributes.Get.RuntimeCompatibility;
+			PredefinedAttribute pa = tc.Compiler.PredefinedAttributes.RuntimeCompatibility;
 			if (pa.IsDefined && (OptAttributes == null || !OptAttributes.Contains (pa))) {
 				var ci = TypeManager.GetPredefinedConstructor (pa.Type, Location.Null, TypeSpec.EmptyTypes);
 				PropertyInfo [] pis = new PropertyInfo [1];
+
 				pis [0] = TypeManager.GetPredefinedProperty (pa.Type,
 					"WrapNonExceptionThrows", Location.Null, TypeManager.bool_type).MetaInfo;
 				object [] pargs = new object [1];

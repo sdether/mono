@@ -231,6 +231,8 @@ struct _MonoDomain {
 	MonoObject         *typeof_void;
 	/* Ephemeron Tombstone*/
 	MonoObject         *ephemeron_tombstone;
+	/* new MonoType [0] */
+	MonoArray          *empty_types;
 	/* 
 	 * The fields between FIRST_GC_TRACKED and LAST_GC_TRACKED are roots, but
 	 * not object references.
@@ -316,6 +318,12 @@ struct _MonoDomain {
 	/* Assembly bindings, the per-domain part */
 	GSList *assembly_bindings;
 	gboolean assembly_bindings_parsed;
+
+	/* Used by socket-io.c */
+	/* These are domain specific, since the assembly can be unloaded */
+	MonoImage *socket_assembly;
+	MonoClass *sockaddr_class;
+	MonoClassField *sockaddr_data_field;
 };
 
 typedef struct  {

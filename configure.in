@@ -6,7 +6,7 @@ AC_CANONICAL_SYSTEM
 m4_ifdef([_A][M_PROG_TAR],[_A][M_SET_OPTION([tar-ustar])])
 
 AM_CONFIG_HEADER(config.h)
-AM_INIT_AUTOMAKE(mono,2.8)
+AM_INIT_AUTOMAKE(mono,2.8.1)
 AM_MAINTAINER_MODE
 
 API_VER=2.0
@@ -2914,7 +2914,7 @@ fi
       echo "PLATFORM = darwin" >> $mcs_topdir/build/config.make
     fi
 
-    if test x$TARGET = xAMD64 -a x$host_win32 = xno -a "x$AOT_SUPPORTED" = "xyes" -a x$enable_system_aot = xyes; then
+    if test x$host_win32 = xno -a x$platform_darwin != xyes -a "x$AOT_SUPPORTED" = "xyes" -a x$enable_system_aot = xyes; then
       echo "ENABLE_AOT = 1" >> $mcs_topdir/build/config.make
     fi
 

@@ -103,6 +103,7 @@ typedef struct {
 	GSList *onthrow;
 	int timeout;
 	char *launch;
+	gboolean embedding;
 } AgentConfig;
 
 typedef struct
@@ -111,6 +112,11 @@ typedef struct
 	guint32 il_offset;
 	MonoDomain *domain;
 	MonoMethod *method;
+	/*
+	 * If method is gshared, this is the actual instance, otherwise this is equal to
+	 * method.
+	 */
+	MonoMethod *actual_method;
 	MonoContext ctx;
 	MonoDebugMethodJitInfo *jit;
 	int flags;
@@ -232,7 +238,7 @@ typedef struct {
 #define HEADER_LENGTH 11
 
 #define MAJOR_VERSION 2
-#define MINOR_VERSION 1
+#define MINOR_VERSION 2
 
 typedef enum {
 	CMD_SET_VM = 1,
@@ -534,6 +540,8 @@ static HANDLE debugger_thread_handle;
 
 static int log_level;
 
+static gboolean embedding;
+
 static FILE *log_file;
 
 /* Classes whose class load event has been sent */
@@ -582,9 +590,9 @@ static void runtime_initialized (MonoProfiler *prof);
 
 static void runtime_shutdown (MonoProfiler *prof);
 
-static void thread_startup (MonoProfiler *prof, intptr_t tid);
+static void thread_startup (MonoProfiler *prof, uintptr_t tid);
 
-static void thread_end (MonoProfiler *prof, intptr_t tid);
+static void thread_end (MonoProfiler *prof, uintptr_t tid);
 
 static void appdomain_load (MonoProfiler *prof, MonoDomain *domain, int result);
 
@@ -727,6 +735,8 @@ mono_debugger_agent_parse_options (char *options)
 			agent_config.timeout = atoi (arg + 8);
 		} else if (strncmp (arg, "launch=", 7) == 0) {
 			agent_config.launch = g_strdup (arg + 7);
+		} else if (strncmp (arg, "embedding=", 10) == 0) {
+			agent_config.embedding = atoi (arg + 10) == 1;
 		} else {
 			print_usage ();
 			exit (1);
@@ -793,6 +803,8 @@ mono_debugger_agent_init (void)
 	domains = g_hash_table_new (mono_aligned_addr_hash, NULL);
 
 	log_level = agent_config.log_level;
+
+	embedding = agent_config.embedding;
 
 	if (agent_config.log_file) {
 		log_file = fopen (agent_config.log_file, "w+");
@@ -899,7 +911,7 @@ mono_debugger_agent_cleanup (void)
 	//WaitForSingleObject (debugger_thread_handle, INFINITE);
 	if (GetCurrentThreadId () != debugger_thread_id) {
 		mono_mutex_lock (&debugger_thread_exited_mutex);
-		if (!debugger_thread_exited) {
+		while (!debugger_thread_exited) {
 #ifdef HOST_WIN32
 			if (WAIT_TIMEOUT == WaitForSingleObject(debugger_thread_exited_cond, 0)) {
 				mono_mutex_unlock (&debugger_thread_exited_mutex);
@@ -2437,7 +2449,7 @@ process_frame (StackFrameInfo *info, MonoContext *ctx, gpointer user_data)
 {
 	ComputeFramesUserData *ud = user_data;
 	StackFrame *frame;
-	MonoMethod *method;
+	MonoMethod *method, *actual_method;
 
 	if (info->type != FRAME_TYPE_MANAGED) {
 		if (info->type == FRAME_TYPE_DEBUGGER_INVOKE) {
@@ -2452,6 +2464,7 @@ process_frame (StackFrameInfo *info, MonoContext *ctx, gpointer user_data)
 		method = info->ji->method;
 	else
 		method = info->method;
+	actual_method = info->actual_method;
 
 	if (!method || (method->wrapper_type && method->wrapper_type != MONO_WRAPPER_DYNAMIC_METHOD))
 		return FALSE;
@@ -2475,6 +2488,7 @@ process_frame (StackFrameInfo *info, MonoContext *ctx, gpointer user_data)
 
 	frame = g_new0 (StackFrame, 1);
 	frame->method = method;
+	frame->actual_method = actual_method;
 	frame->il_offset = info->il_offset;
 	if (ctx) {
 		frame->ctx = *ctx;
@@ -2833,7 +2847,7 @@ runtime_shutdown (MonoProfiler *prof)
 }
 
 static void
-thread_startup (MonoProfiler *prof, intptr_t tid)
+thread_startup (MonoProfiler *prof, uintptr_t tid)
 {
 	MonoInternalThread *thread = mono_thread_internal_current ();
 	MonoInternalThread *old_thread;
@@ -2895,7 +2909,7 @@ thread_startup (MonoProfiler *prof, intptr_t tid)
 }
 
 static void
-thread_end (MonoProfiler *prof, intptr_t tid)
+thread_end (MonoProfiler *prof, uintptr_t tid)
 {
 	MonoInternalThread *thread;
 	DebuggerTlsData *tls = NULL;
@@ -3000,7 +3014,7 @@ end_runtime_invoke (MonoProfiler *prof, MonoMethod *method)
 	gpointer stackptr = __builtin_frame_address (1);
 #endif
 
-	if (ss_req == NULL || stackptr != ss_invoke_addr || ss_req->thread != mono_thread_internal_current ())
+	if (!embedding || ss_req == NULL || stackptr != ss_invoke_addr || ss_req->thread != mono_thread_internal_current ())
 		return;
 
 	/*
@@ -4110,6 +4124,8 @@ mono_debugger_agent_handle_exception (MonoException *exc, MonoContext *throw_ctx
 		mono_loader_unlock ();
 
 		if (tls && tls->abort_requested)
+			return;
+		if (tls && tls->disable_breakpoints)
 			return;
 	}
 
@@ -6249,7 +6265,7 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		buffer_add_int (buf, tls->frame_count);
 		for (i = 0; i < tls->frame_count; ++i) {
 			buffer_add_int (buf, tls->frames [i]->id);
-			buffer_add_methodid (buf, tls->frames [i]->domain, tls->frames [i]->method);
+			buffer_add_methodid (buf, tls->frames [i]->domain, tls->frames [i]->actual_method);
 			buffer_add_int (buf, tls->frames [i]->il_offset);
 			/*
 			 * Instead of passing the frame type directly to the client, we associate
@@ -6329,12 +6345,12 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 	}
 	jit = frame->jit;
 
-	sig = mono_method_signature (frame->method);
+	sig = mono_method_signature (frame->actual_method);
 
 	switch (command) {
 	case CMD_STACK_FRAME_GET_VALUES: {
 		len = decode_int (p, &p, end);
-		header = mono_method_get_header (frame->method);
+		header = mono_method_get_header (frame->actual_method);
 
 		for (i = 0; i < len; ++i) {
 			pos = decode_int (p, &p, end);
@@ -6364,12 +6380,12 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 				MonoObject *p = NULL;
 				buffer_add_value (buf, &mono_defaults.object_class->byval_arg, &p, frame->domain);
 			} else {
-				add_var (buf, &frame->method->klass->this_arg, jit->this_var, &frame->ctx, frame->domain, TRUE);
+				add_var (buf, &frame->actual_method->klass->this_arg, jit->this_var, &frame->ctx, frame->domain, TRUE);
 			}
 		} else {
 			if (!sig->hasthis) {
 				MonoObject *p = NULL;
-				buffer_add_value (buf, &frame->method->klass->byval_arg, &p, frame->domain);
+				buffer_add_value (buf, &frame->actual_method->klass->byval_arg, &p, frame->domain);
 			} else {
 				add_var (buf, &frame->method->klass->byval_arg, jit->this_var, &frame->ctx, frame->domain, TRUE);
 			}
@@ -6382,7 +6398,7 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		MonoDebugVarInfo *var;
 
 		len = decode_int (p, &p, end);
-		header = mono_method_get_header (frame->method);
+		header = mono_method_get_header (frame->actual_method);
 
 		for (i = 0; i < len; ++i) {
 			pos = decode_int (p, &p, end);

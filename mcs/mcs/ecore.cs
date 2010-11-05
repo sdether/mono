@@ -1873,6 +1873,16 @@ namespace Mono.CSharp {
 			this.loc = orig_expr.Location;
 		}
 
+		#region Properties
+
+		public Expression OriginalExpression {
+			get {
+				return orig_expr;
+			}
+		}
+
+		#endregion
+
 		//
 		// Creates fully resolved expression switcher
 		//
@@ -2224,10 +2234,10 @@ namespace Mono.CSharp {
 			}
 
 			if (Arity == 0 && Name == "dynamic" && RootContext.Version > LanguageVersion.V_3) {
-				if (!PredefinedAttributes.Get.Dynamic.IsDefined) {
+				if (!ec.Compiler.PredefinedAttributes.Dynamic.IsDefined) {
 					ec.Compiler.Report.Error (1980, Location,
 						"Dynamic keyword requires `{0}' to be defined. Are you missing System.Core.dll assembly reference?",
-						PredefinedAttributes.Get.Dynamic.GetSignatureForError ());
+						ec.Compiler.PredefinedAttributes.Dynamic.GetSignatureForError ());
 				}
 
 				return new DynamicTypeExpr (loc);
@@ -3079,11 +3089,6 @@ namespace Mono.CSharp {
 				ResolveInstanceExpression (ec);
 				if (InstanceExpression != null)
 					CheckProtectedMemberAccess (ec, best_candidate);
-
-				if (best_candidate.IsGeneric) {
-					ConstraintChecker.CheckAll (ec.MemberContext, best_candidate.GetGenericMethodDefinition (), best_candidate.TypeArguments,
-						best_candidate.Constraints, loc);
-				}
 			}
 
 			best_candidate = CandidateToBaseOverride (ec, best_candidate);
@@ -3670,6 +3675,13 @@ namespace Mono.CSharp {
 					candidate = ms;
 					pd = ms.Parameters;
 				}
+
+				//
+				// Type arguments constraints have to match
+				//
+				if (!ConstraintChecker.CheckAll (null, ms.GetGenericMethodDefinition (), ms.TypeArguments, ms.Constraints, loc))
+					return int.MaxValue - 25000;
+
 			} else {
 				if (type_arguments != null)
 					return int.MaxValue - 15000;
@@ -3710,7 +3722,7 @@ namespace Mono.CSharp {
 				}
 
 				if (p_mod != Parameter.Modifier.PARAMS) {
-					p_mod = pd.FixedParameters[i].ModFlags & ~(Parameter.Modifier.OUTMASK | Parameter.Modifier.REFMASK);
+					p_mod = pd.FixedParameters[i].ModFlags;
 					pt = pd.Types[i];
 				} else if (!params_expanded_form) {
 					params_expanded_form = true;
@@ -3719,10 +3731,9 @@ namespace Mono.CSharp {
 					continue;
 				}
 
-				Parameter.Modifier a_mod = a.Modifier & ~(Parameter.Modifier.OUTMASK | Parameter.Modifier.REFMASK);
 				score = 1;
 				if (!params_expanded_form)
-					score = IsArgumentCompatible (ec, a_mod, a, p_mod & ~Parameter.Modifier.PARAMS, pt);
+					score = IsArgumentCompatible (ec, a, p_mod & ~Parameter.Modifier.PARAMS, pt);
 
 				//
 				// It can be applicable in expanded form (when not doing exact match like for delegates)
@@ -3731,7 +3742,7 @@ namespace Mono.CSharp {
 					if (!params_expanded_form)
 						pt = ((ElementTypeSpec) pt).Element;
 
-					score = IsArgumentCompatible (ec, a_mod, a, 0, pt);
+					score = IsArgumentCompatible (ec, a, Parameter.Modifier.NONE, pt);
 					if (score == 0)
 						params_expanded_form = true;
 				}
@@ -3752,13 +3763,13 @@ namespace Mono.CSharp {
 			return 0;
 		}
 
-		int IsArgumentCompatible (ResolveContext ec, Parameter.Modifier arg_mod, Argument argument, Parameter.Modifier param_mod, TypeSpec parameter)
+		int IsArgumentCompatible (ResolveContext ec, Argument argument, Parameter.Modifier param_mod, TypeSpec parameter)
 		{
 			//
 			// Types have to be identical when ref or out modifer
 			// is used and argument is not of dynamic type
 			//
-			if ((arg_mod | param_mod) != 0) {
+			if ((argument.Modifier | param_mod) != 0) {
 				//
 				// Defer to dynamic binder
 				//
@@ -3795,7 +3806,7 @@ namespace Mono.CSharp {
 				}
 			}
 
-			if (arg_mod != param_mod)
+			if (argument.Modifier != param_mod)
 				return 1;
 
 			return 0;
@@ -4123,14 +4134,23 @@ namespace Mono.CSharp {
 					}
 
 					var ms = best_candidate as MethodSpec;
-					if (ms != null && ms.IsGeneric && ta_count == 0) {
-						if (custom_errors != null && custom_errors.TypeInferenceFailed (rc, best_candidate))
-							return;
+					if (ms != null && ms.IsGeneric) {
+						bool constr_ok = true;
+						if (ms.TypeArguments != null)
+							constr_ok = ConstraintChecker.CheckAll (rc.MemberContext, ms.GetGenericMethodDefinition (), ms.TypeArguments, ms.Constraints, loc);
 
-						rc.Report.Error (411, loc,
-							"The type arguments for method `{0}' cannot be inferred from the usage. Try specifying the type arguments explicitly",
-							ms.GetGenericMethodDefinition ().GetSignatureForError ());
-						return;
+						if (ta_count == 0) {
+							if (custom_errors != null && custom_errors.TypeInferenceFailed (rc, best_candidate))
+								return;
+
+							if (constr_ok) {
+								rc.Report.Error (411, loc,
+									"The type arguments for method `{0}' cannot be inferred from the usage. Try specifying the type arguments explicitly",
+									ms.GetGenericMethodDefinition ().GetSignatureForError ());
+							}
+
+							return;
+						}
 					}
 
 					VerifyArguments (rc, ref args, best_candidate, params_expanded);

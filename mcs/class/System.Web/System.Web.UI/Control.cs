@@ -821,6 +821,8 @@ namespace System.Web.UI
 			uniqueID = null;
 #if NET_4_0
 			ClearCachedClientID ();
+#else
+			clientID = null;
 #endif
 			if (!HasControls ())
 				return;
@@ -1098,8 +1100,18 @@ namespace System.Web.UI
 				return null;
 			
 			int separatorIdx = id.IndexOf (IdSeparator, pathOffset);
-			if (separatorIdx == -1)
-				return LookForControlByName (id.Substring (pathOffset));
+			if (separatorIdx == -1) {
+				if (pathOffset == 0) {
+					namingContainer = NamingContainer;
+					if (namingContainer != null) {
+						Control ctl = namingContainer.FindControl (id);
+						if (ctl != null)
+							return ctl;
+					}
+				}
+
+				return LookForControlByName (pathOffset > 0 ? id.Substring (pathOffset) : id);
+			}
 
 			string idfound = id.Substring (pathOffset, separatorIdx - pathOffset);
 			namingContainer = LookForControlByName (idfound);

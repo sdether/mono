@@ -6355,7 +6355,7 @@ mymono_metadata_type_hash (MonoType *t1)
 	case MONO_TYPE_CLASS:
 	case MONO_TYPE_SZARRAY:
 		/* check if the distribution is good enough */
-		return ((hash << 5) - hash) ^ g_str_hash (t1->data.klass->name);
+		return ((hash << 5) - hash) ^ mono_aligned_addr_hash (t1->data.klass);
 	case MONO_TYPE_PTR:
 		return ((hash << 5) - hash) ^ mymono_metadata_type_hash (t1->data.type);
 	case MONO_TYPE_GENERICINST: {
@@ -6369,6 +6369,9 @@ mymono_metadata_type_hash (MonoType *t1)
 		}
 		return hash;
 	}
+	case MONO_TYPE_VAR:
+	case MONO_TYPE_MVAR:
+		return ((hash << 5) - hash) ^ GPOINTER_TO_UINT (t1->data.generic_param);
 	}
 	return hash;
 }
@@ -11571,6 +11574,19 @@ mono_reflection_is_valid_dynamic_token (MonoDynamicImage *image, guint32 token)
 	return mono_g_hash_table_lookup (image->tokens, GUINT_TO_POINTER (token)) != NULL;
 }
 
+MonoMethodSignature *
+mono_reflection_lookup_signature (MonoImage *image, MonoMethod *method, guint32 token)
+{
+	MonoMethodSignature *sig;
+	g_assert (image->dynamic);
+
+	sig = g_hash_table_lookup (((MonoDynamicImage*)image)->vararg_aux_hash, GUINT_TO_POINTER (token));
+	if (sig)
+		return sig;
+
+	return mono_method_signature (method);
+}
+
 #ifndef DISABLE_REFLECTION_EMIT
 
 /**
@@ -11603,19 +11619,6 @@ mono_reflection_lookup_dynamic_token (MonoImage *image, guint32 token, gboolean 
 	if (!handle_class)
 		handle_class = &klass;
 	return resolve_object (image, obj, handle_class, context);
-}
-
-MonoMethodSignature *
-mono_reflection_lookup_signature (MonoImage *image, MonoMethod *method, guint32 token)
-{
-	MonoMethodSignature *sig;
-	g_assert (image->dynamic);
-
-	sig = g_hash_table_lookup (((MonoDynamicImage*)image)->vararg_aux_hash, GUINT_TO_POINTER (token));
-	if (sig)
-		return sig;
-
-	return mono_method_signature (method);
 }
 
 /*

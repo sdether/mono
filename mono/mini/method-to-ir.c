@@ -2595,7 +2595,8 @@ emit_write_barrier (MonoCompile *cfg, MonoInst *ptr, MonoInst *value, int value_
 {
 #ifdef HAVE_SGEN_GC
 	int card_table_shift_bits;
-	guint8 *card_table = mono_gc_get_card_table (&card_table_shift_bits);
+	gpointer card_table_mask;
+	guint8 *card_table = mono_gc_get_card_table (&card_table_shift_bits, &card_table_mask);
 	MonoInst *dummy_use;
 
 #ifdef MONO_ARCH_HAVE_CARD_TABLE_WBARRIER
@@ -2604,7 +2605,7 @@ emit_write_barrier (MonoCompile *cfg, MonoInst *ptr, MonoInst *value, int value_
 
 	mono_gc_get_nursery (&nursery_shift_bits, &nursery_size);
 
-	if (card_table && nursery_shift_bits > 0) {
+	if (!cfg->compile_aot && card_table && nursery_shift_bits > 0) {
 		MonoInst *wbarrier;
 
 		MONO_INST_NEW (cfg, wbarrier, OP_CARD_TABLE_WBARRIER);
@@ -2614,17 +2615,32 @@ emit_write_barrier (MonoCompile *cfg, MonoInst *ptr, MonoInst *value, int value_
 		else
 			wbarrier->sreg2 = value_reg;
 		MONO_ADD_INS (cfg->cbb, wbarrier);
-	}
-#else
+	} else
+#endif
 	if (card_table) {
 		int offset_reg = alloc_preg (cfg);
+		int card_reg  = alloc_preg (cfg);
+		MonoInst *ins;
 
 		MONO_EMIT_NEW_BIALU_IMM (cfg, OP_SHR_UN_IMM, offset_reg, ptr->dreg, card_table_shift_bits);
-		MONO_EMIT_NEW_BIALU_IMM (cfg, OP_PADD_IMM, offset_reg, offset_reg, card_table);
+		if (card_table_mask)
+			MONO_EMIT_NEW_BIALU_IMM (cfg, OP_PAND_IMM, offset_reg, offset_reg, card_table_mask);
+
+		/*We can't use PADD_IMM since the cardtable might end up in high addresses and amd64 doesn't support
+		 * IMM's larger than 32bits.
+		 */
+		if (cfg->compile_aot) {
+			MONO_EMIT_NEW_AOTCONST (cfg, card_reg, NULL, MONO_PATCH_INFO_GC_CARD_TABLE_ADDR);
+		} else {
+			MONO_INST_NEW (cfg, ins, OP_PCONST);
+			ins->inst_p0 = card_table;
+			ins->dreg = card_reg;
+			MONO_ADD_INS (cfg->cbb, ins);
+		}
+
+		MONO_EMIT_NEW_BIALU (cfg, OP_PADD, offset_reg, offset_reg, card_reg);
 		MONO_EMIT_NEW_STORE_MEMBASE_IMM (cfg, OP_STOREI1_MEMBASE_IMM, offset_reg, 0, 1);
-	}
-#endif
-	else {
+	} else {
 		MonoMethod *write_barrier = mono_gc_get_write_barrier ();
 		mono_emit_method_call (cfg, write_barrier, &ptr, NULL);
 	}
@@ -4673,7 +4689,7 @@ check_inline_caller_method_name_limit (MonoMethod *caller_method)
 
 static int
 inline_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig, MonoInst **sp,
-		guchar *ip, guint real_offset, GList *dont_inline, gboolean inline_allways)
+		guchar *ip, guint real_offset, GList *dont_inline, gboolean inline_always)
 {
 	MonoInst *ins, *rvar = NULL;
 	MonoMethodHeader *cheader;
@@ -4695,11 +4711,11 @@ inline_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig,
 	g_assert (cfg->exception_type == MONO_EXCEPTION_NONE);
 
 #if (MONO_INLINE_CALLED_LIMITED_METHODS)
-	if ((! inline_allways) && ! check_inline_called_method_name_limit (cmethod))
+	if ((! inline_always) && ! check_inline_called_method_name_limit (cmethod))
 		return 0;
 #endif
 #if (MONO_INLINE_CALLER_LIMITED_METHODS)
-	if ((! inline_allways) && ! check_inline_caller_method_name_limit (cfg->method))
+	if ((! inline_always) && ! check_inline_caller_method_name_limit (cfg->method))
 		return 0;
 #endif
 
@@ -4715,8 +4731,13 @@ inline_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig,
 	cheader = mono_method_get_header (cmethod);
 
 	if (cheader == NULL || mono_loader_get_last_error ()) {
+		MonoLoaderError *error = mono_loader_get_last_error ();
+
 		if (cheader)
 			mono_metadata_free_mh (cheader);
+		if (inline_always && error)
+			cfg->exception_type = error->exception_type;
+
 		mono_loader_clear_error ();
 		return 0;
 	}
@@ -4775,7 +4796,7 @@ inline_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSignature *fsig,
 	cfg->ret_var_set = prev_ret_var_set;
 	cfg->inline_depth --;
 
-	if ((costs >= 0 && costs < 60) || inline_allways) {
+	if ((costs >= 0 && costs < 60) || inline_always) {
 		if (cfg->verbose_level > 2)
 			printf ("INLINE END %s -> %s\n", mono_method_full_name (cfg->method, TRUE), mono_method_full_name (cmethod, TRUE));
 		
@@ -6637,17 +6658,17 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 			    mono_method_check_inlining (cfg, cmethod) &&
 				 !g_list_find (dont_inline, cmethod)) {
 				int costs;
-				gboolean allways = FALSE;
+				gboolean always = FALSE;
 
 				if ((cmethod->iflags & METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL) ||
 					(cmethod->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL)) {
 					/* Prevent inlining of methods that call wrappers */
 					INLINE_FAILURE;
 					cmethod = mono_marshal_get_native_wrapper (cmethod, check_for_pending_exc, FALSE);
-					allways = TRUE;
+					always = TRUE;
 				}
 
- 				if ((costs = inline_method (cfg, cmethod, fsig, sp, ip, cfg->real_offset, dont_inline, allways))) {
+ 				if ((costs = inline_method (cfg, cmethod, fsig, sp, ip, cfg->real_offset, dont_inline, always))) {
 					ip += 5;
 					cfg->real_offset += 5;
 					bblock = cfg->cbb;
@@ -7834,7 +7855,8 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 				iargs [0] = sp [0];
 				
 				costs = inline_method (cfg, mono_castclass, mono_method_signature (mono_castclass), 
-							   iargs, ip, cfg->real_offset, dont_inline, TRUE);			
+							   iargs, ip, cfg->real_offset, dont_inline, TRUE);
+				CHECK_CFG_EXCEPTION;
 				g_assert (costs > 0);
 				
 				ip += 5;
@@ -7888,7 +7910,8 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 				iargs [0] = sp [0];
 
 				costs = inline_method (cfg, mono_isinst, mono_method_signature (mono_isinst), 
-							   iargs, ip, cfg->real_offset, dont_inline, TRUE);			
+							   iargs, ip, cfg->real_offset, dont_inline, TRUE);
+				CHECK_CFG_EXCEPTION;
 				g_assert (costs > 0);
 				
 				ip += 5;
@@ -7933,7 +7956,7 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 
 					costs = inline_method (cfg, mono_castclass, mono_method_signature (mono_castclass), 
 										   iargs, ip, cfg->real_offset, dont_inline, TRUE);
-			
+					CHECK_CFG_EXCEPTION;
 					g_assert (costs > 0);
 				
 					ip += 5;
@@ -8164,6 +8187,7 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 					if (cfg->opt & MONO_OPT_INLINE || cfg->compile_aot) {
 						costs = inline_method (cfg, stfld_wrapper, mono_method_signature (stfld_wrapper), 
 								       iargs, ip, cfg->real_offset, dont_inline, TRUE);
+						CHECK_CFG_EXCEPTION;
 						g_assert (costs > 0);
 						      
 						cfg->real_offset += 5;
@@ -8210,6 +8234,7 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 				if (cfg->opt & MONO_OPT_INLINE || cfg->compile_aot) {
 					costs = inline_method (cfg, wrapper, mono_method_signature (wrapper), 
 										   iargs, ip, cfg->real_offset, dont_inline, TRUE);
+					CHECK_CFG_EXCEPTION;
 					bblock = cfg->cbb;
 					g_assert (costs > 0);
 						      
@@ -9178,7 +9203,7 @@ mono_method_to_ir (MonoCompile *cfg, MonoMethod *method, MonoBasicBlock *start_b
 					NEW_BBLOCK (cfg, dont_throw);
 
 					/*
-					 * Currently, we allways rethrow the abort exception, despite the 
+					 * Currently, we always rethrow the abort exception, despite the 
 					 * fact that this is not correct. See thread6.cs for an example. 
 					 * But propagating the abort exception is more important than 
 					 * getting the sematics right.

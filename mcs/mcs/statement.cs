@@ -1154,7 +1154,8 @@ namespace Mono.CSharp {
 	//
 	// The information about a user-perceived local variable
 	//
-	public class LocalInfo : IKnownVariable, ILocalVariable {
+	public class LocalInfo : IKnownVariable, ILocalVariable
+	{
 		public readonly FullNamedExpression Type;
 
 		public TypeSpec VariableType;
@@ -1955,7 +1956,7 @@ namespace Mono.CSharp {
 				constants.Remove (name);
 
 				if (!variable_type.IsConstantCompatible) {
-					Const.Error_InvalidConstantType (variable_type, loc, ec.Report);
+					Const.Error_InvalidConstantType (variable_type, vi.Location, ec.Report);
 					continue;
 				}
 
@@ -2363,12 +2364,11 @@ namespace Mono.CSharp {
 
 			if (am_storey == null) {
 				MemberBase mc = ec.MemberContext as MemberBase;
-				GenericMethod gm = mc == null ? null : mc.GenericMethod;
 
 				//
 				// Creates anonymous method storey for this block
 				//
-				am_storey = new AnonymousMethodStorey (this, ec.CurrentMemberDefinition.Parent.PartialContainer, mc, gm, "AnonStorey");
+				am_storey = new AnonymousMethodStorey (this, ec.CurrentMemberDefinition.Parent.PartialContainer, mc, ec.CurrentTypeParameters, "AnonStorey");
 			}
 
 			return am_storey;
@@ -4742,8 +4742,9 @@ namespace Mono.CSharp {
 			if (General != null) {
 				if (CodeGen.Assembly.WrapNonExceptionThrows) {
 					foreach (Catch c in Specific){
-						if (c.CatchType == TypeManager.exception_type && PredefinedAttributes.Get.RuntimeCompatibility.IsDefined) {
-							ec.Report.Warning (1058, 1, c.loc, "A previous catch clause already catches all exceptions. All non-exceptions thrown will be wrapped in a `System.Runtime.CompilerServices.RuntimeWrappedException'");
+						if (c.CatchType == TypeManager.exception_type && ec.Compiler.PredefinedAttributes.RuntimeCompatibility.IsDefined) {
+							ec.Report.Warning (1058, 1, c.loc,
+								"A previous catch clause already catches all exceptions. All non-exceptions thrown will be wrapped in a `System.Runtime.CompilerServices.RuntimeWrappedException'");
 						}
 					}
 				}

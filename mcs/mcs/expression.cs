@@ -5833,7 +5833,6 @@ namespace Mono.CSharp {
 			if (initializers == null)
 				return true;
 
-			only_constant_initializers = true;
 			for (int i = 0; i < probe.Count; ++i) {
 				var o = probe [i];
 				if (o is ArrayInitializer) {
@@ -5941,6 +5940,8 @@ namespace Mono.CSharp {
 
 		protected bool ResolveInitializers (ResolveContext ec)
 		{
+			only_constant_initializers = true;
+
 			if (arguments != null) {
 				bool res = true;
 				for (int i = 0; i < arguments.Count; ++i) {
@@ -6280,9 +6281,10 @@ namespace Mono.CSharp {
 				return;
 
 			// Emit static initializer for arrays which have contain more than 2 items and
-			// the static initializer will initialize at least 25% of array values.
+			// the static initializer will initialize at least 25% of array values or there
+			// is more than 10 items to be initialized
 			// NOTE: const_initializers_count does not contain default constant values.
-			if (const_initializers_count > 2 && const_initializers_count * 4 > (array_data.Count) &&
+			if (const_initializers_count > 2 && (array_data.Count > 10 || const_initializers_count * 4 > (array_data.Count)) &&
 				(TypeManager.IsPrimitiveType (array_element_type) || TypeManager.IsEnumType (array_element_type))) {
 				EmitStaticInitializers (ec);
 
@@ -7173,7 +7175,7 @@ namespace Mono.CSharp {
 		public override FullNamedExpression ResolveAsTypeStep (IMemberContext ec, bool silent)
 		{
 			if (alias == GlobalAlias) {
-				expr = GlobalRootNamespace.Instance;
+				expr = ec.Compiler.GlobalRootNamespace;
 				return base.ResolveAsTypeStep (ec, silent);
 			}
 
@@ -8559,8 +8561,10 @@ namespace Mono.CSharp {
 					UnsafeError (ec.Compiler.Report, loc);
 				}
 
-				type = PointerContainer.MakeType (type);
-				single_spec = single_spec.Next;
+				do {
+					type = PointerContainer.MakeType (type);
+					single_spec = single_spec.Next;
+				} while (single_spec != null && single_spec.IsPointer);
 			}
 
 			if (single_spec != null && single_spec.Dimension > 0) {

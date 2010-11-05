@@ -69,6 +69,24 @@
 #include "mini-gc.h"
 #include "debugger-agent.h"
 
+#if defined(HAVE_KW_THREAD)
+#define MINI_FAST_TLS_SET(x,y) x = y
+#define MINI_FAST_TLS_GET(x) x
+#define MINI_FAST_TLS_INIT(x)
+#define MINI_FAST_TLS_DECLARE(x) static __thread gpointer x MONO_TLS_FAST;
+#define MINI_HAVE_FAST_TLS
+#define MINI_THREAD_VAR_OFFSET(x,y) MONO_THREAD_VAR_OFFSET(x,y)
+#elif (defined(__APPLE__) && defined(__i386__))
+#define MINI_FAST_TLS_SET(x,y) pthread_setspecific(x, y)
+#define MINI_FAST_TLS_GET(x) pthread_getspecific(x)
+#define MINI_FAST_TLS_INIT(x) pthread_key_create(&x, NULL)
+#define MINI_FAST_TLS_DECLARE(x) static pthread_key_t x;
+#define MINI_HAVE_FAST_TLS
+#define MINI_THREAD_VAR_OFFSET(x,y) y = (gint32) x
+#else
+#define MINI_THREAD_VAR_OFFSET(x,y) MONO_THREAD_VAR_OFFSET(x,y)
+#endif
+
 static gpointer mono_jit_compile_method_with_opt (MonoMethod *method, guint32 opt, MonoException **ex);
 
 /* helper methods signature */
@@ -91,8 +109,8 @@ static gboolean default_opt_set = FALSE;
 
 guint32 mono_jit_tls_id = -1;
 
-#ifdef HAVE_KW_THREAD
-static __thread gpointer mono_jit_tls MONO_TLS_FAST;
+#ifdef MINI_HAVE_FAST_TLS
+MINI_FAST_TLS_DECLARE(mono_jit_tls);
 #endif
 
 MonoTraceSpec *mono_jit_trace_calls = NULL;
@@ -2304,14 +2322,14 @@ mono_destroy_compile (MonoCompile *cfg)
 	g_free (cfg);
 }
 
-#ifdef HAVE_KW_THREAD
-static __thread gpointer mono_lmf_addr MONO_TLS_FAST;
+#ifdef MINI_HAVE_FAST_TLS
+MINI_FAST_TLS_DECLARE(mono_lmf_addr);
 #ifdef MONO_ARCH_ENABLE_MONO_LMF_VAR
 /* 
  * When this is defined, the current lmf is stored in this tls variable instead of in 
  * jit_tls->lmf.
  */
-static __thread gpointer mono_lmf MONO_TLS_FAST;
+MINI_FAST_TLS_DECLARE(mono_lmf);
 #endif
 #endif
 
@@ -2324,9 +2342,9 @@ mono_get_jit_tls_key (void)
 gint32
 mono_get_jit_tls_offset (void)
 {
-#ifdef HAVE_KW_THREAD
+#ifdef MINI_HAVE_FAST_TLS
 	int offset;
-	MONO_THREAD_VAR_OFFSET (mono_jit_tls, offset);
+	MINI_THREAD_VAR_OFFSET (mono_jit_tls, offset);
 	return offset;
 #else
 	return -1;
@@ -2336,9 +2354,9 @@ mono_get_jit_tls_offset (void)
 gint32
 mono_get_lmf_tls_offset (void)
 {
-#if defined(HAVE_KW_THREAD) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
+#if defined(MINI_HAVE_FAST_TLS) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
 	int offset;
-	MONO_THREAD_VAR_OFFSET(mono_lmf,offset);
+	MINI_THREAD_VAR_OFFSET(mono_lmf,offset);
 	return offset;
 #else
 	return -1;
@@ -2349,15 +2367,15 @@ gint32
 mono_get_lmf_addr_tls_offset (void)
 {
 	int offset;
-	MONO_THREAD_VAR_OFFSET(mono_lmf_addr,offset);
+	MINI_THREAD_VAR_OFFSET(mono_lmf_addr,offset);
 	return offset;
 }
 
 MonoLMF *
 mono_get_lmf (void)
 {
-#if defined(HAVE_KW_THREAD) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
-	return mono_lmf;
+#if defined(MINI_HAVE_FAST_TLS) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
+	return MINI_FAST_TLS_GET (mono_lmf);
 #else
 	MonoJitTlsData *jit_tls;
 
@@ -2372,8 +2390,8 @@ mono_get_lmf (void)
 MonoLMF **
 mono_get_lmf_addr (void)
 {
-#ifdef HAVE_KW_THREAD
-	return mono_lmf_addr;
+#ifdef MINI_HAVE_FAST_TLS
+	return MINI_FAST_TLS_GET (mono_lmf_addr);
 #else
 	MonoJitTlsData *jit_tls;
 
@@ -2401,8 +2419,8 @@ mono_get_lmf_addr (void)
 void
 mono_set_lmf (MonoLMF *lmf)
 {
-#if defined(HAVE_KW_THREAD) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
-	mono_lmf = lmf;
+#if defined(MINI_HAVE_FAST_TLS) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
+	MINI_FAST_TLS_SET (mono_lmf, lmf);
 #endif
 
 	(*mono_get_lmf_addr ()) = lmf;
@@ -2419,8 +2437,8 @@ mono_jit_thread_attach (MonoDomain *domain)
 		 */
 		domain = mono_get_root_domain ();
 
-#ifdef HAVE_KW_THREAD
-	if (!mono_lmf_addr) {
+#ifdef MINI_HAVE_FAST_TLS
+	if (!MINI_FAST_TLS_GET (mono_lmf_addr)) {
 		mono_thread_attach (domain);
 	}
 #else
@@ -2467,8 +2485,8 @@ setup_jit_tls_data (gpointer stack_start, gpointer abort_func)
 
 	TlsSetValue (mono_jit_tls_id, jit_tls);
 
-#ifdef HAVE_KW_THREAD
-	mono_jit_tls = jit_tls;
+#ifdef MINI_HAVE_FAST_TLS
+	MINI_FAST_TLS_SET (mono_jit_tls, jit_tls);
 #endif
 
 	jit_tls->abort_func = abort_func;
@@ -2483,13 +2501,13 @@ setup_jit_tls_data (gpointer stack_start, gpointer abort_func)
 
 	jit_tls->first_lmf = lmf;
 
-#if defined(HAVE_KW_THREAD) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
+#if defined(MINI_HAVE_FAST_TLS) && defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
 	/* jit_tls->lmf is unused */
-	mono_lmf = lmf;
-	mono_lmf_addr = &mono_lmf;
+	MINI_FAST_TLS_SET (mono_lmf, lmf);
+	MINI_FAST_TLS_SET (mono_lmf_addr, &mono_lmf);
 #else
-#if defined(HAVE_KW_THREAD)
-	mono_lmf_addr = &jit_tls->lmf;	
+#if defined(MINI_HAVE_FAST_TLS)
+	MINI_FAST_TLS_SET (mono_lmf_addr, &jit_tls->lmf);
 #endif
 
 	jit_tls->lmf = lmf;
@@ -2560,11 +2578,11 @@ mini_thread_cleanup (MonoThread *thread)
 		if (internal == mono_thread_internal_current ()) {
 			TlsSetValue (mono_jit_tls_id, NULL);
 
-#ifdef HAVE_KW_THREAD
-			mono_jit_tls = NULL;
-			mono_lmf_addr = NULL;
+#ifdef MINI_HAVE_FAST_TLS
+			MINI_FAST_TLS_SET (mono_jit_tls, NULL);
+			MINI_FAST_TLS_SET (mono_lmf_addr, NULL);
 #if defined(MONO_ARCH_ENABLE_MONO_LMF_VAR)
-			mono_lmf = NULL;
+			MINI_FAST_TLS_SET (mono_lmf, NULL);
 #endif
 #endif		
 		}
@@ -3021,6 +3039,15 @@ mono_resolve_patch_target (MonoMethod *method, MonoDomain *domain, guint8 *code,
 		g_assert_not_reached ();
 #endif
 		break;
+#ifdef HAVE_SGEN_GC
+	case MONO_PATCH_INFO_GC_CARD_TABLE_ADDR: {
+		int card_table_shift_bits;
+		gpointer card_table_mask;
+
+		target = mono_gc_get_card_table (&card_table_shift_bits, &card_table_mask);
+		break;
+	}
+#endif
 	default:
 		g_assert_not_reached ();
 	}
@@ -5008,11 +5035,16 @@ mono_jit_compile_method_with_opt (MonoMethod *method, guint32 opt, MonoException
 		/* We can't use a domain specific method in another domain */
 		if (! ((domain != target_domain) && !info->domain_neutral)) {
 			MonoVTable *vtable;
+			MonoException *tmpEx;
 
 			mono_jit_stats.methods_lookups++;
 			vtable = mono_class_vtable (domain, method->klass);
 			g_assert (vtable);
-			mono_runtime_class_init (vtable);
+			tmpEx = mono_runtime_class_init_full (vtable, ex == NULL);
+			if (tmpEx) {
+				*ex = tmpEx;
+				return NULL;
+			}
 			return mono_create_ftnptr (target_domain, info->code_start);
 		}
 	}
@@ -5680,8 +5712,8 @@ mini_get_addr_from_ftnptr (gpointer descr)
 static void
 register_jit_stats (void)
 {
-	mono_counters_register ("Compiled methods", MONO_COUNTER_JIT | MONO_COUNTER_LONG, &mono_jit_stats.methods_compiled);
-	mono_counters_register ("Methods from AOT", MONO_COUNTER_JIT | MONO_COUNTER_LONG, &mono_jit_stats.methods_aot);
+	mono_counters_register ("Compiled methods", MONO_COUNTER_JIT | MONO_COUNTER_WORD, &mono_jit_stats.methods_compiled);
+	mono_counters_register ("Methods from AOT", MONO_COUNTER_JIT | MONO_COUNTER_WORD, &mono_jit_stats.methods_aot);
 	mono_counters_register ("Methods JITted using LLVM", MONO_COUNTER_JIT | MONO_COUNTER_INT, &mono_jit_stats.methods_with_llvm);	
 	mono_counters_register ("Methods JITted using mono JIT", MONO_COUNTER_JIT | MONO_COUNTER_INT, &mono_jit_stats.methods_without_llvm);
 }
@@ -5794,6 +5826,14 @@ mini_init (const char *filename, const char *runtime_version)
 		mini_debugger_init ();
 #endif
 
+#ifdef MINI_HAVE_FAST_TLS
+	MINI_FAST_TLS_INIT (mono_jit_tls);
+	MINI_FAST_TLS_INIT (mono_lmf_addr);
+#ifdef MONO_ARCH_ENABLE_MONO_LMF_VAR
+	MINI_FAST_TLS_INIT (mono_lmf);
+#endif
+#endif
+
 #ifdef MONO_ARCH_HAVE_TLS_GET
 	mono_runtime_set_has_tls_get (MONO_ARCH_HAVE_TLS_GET);
 #else
@@ -5842,9 +5882,11 @@ mini_init (const char *filename, const char *runtime_version)
 	}
 
 #ifdef ENABLE_LLVM
-	if (!mono_llvm_load (NULL)) {
-		mono_use_llvm = FALSE;
-		fprintf (stderr, "Mono Warning: llvm support could not be loaded.\n");
+	if (mono_use_llvm) {
+		if (!mono_llvm_load (NULL)) {
+			mono_use_llvm = FALSE;
+			fprintf (stderr, "Mono Warning: llvm support could not be loaded.\n");
+		}
 	}
 	if (mono_use_llvm)
 		mono_llvm_init ();
@@ -5965,10 +6007,8 @@ mini_init (const char *filename, const char *runtime_version)
 
 	register_icall (mono_get_throw_exception (), "mono_arch_throw_exception", "void object", TRUE);
 	register_icall (mono_get_rethrow_exception (), "mono_arch_rethrow_exception", "void object", TRUE);
-#if MONO_ARCH_HAVE_THROW_CORLIB_EXCEPTION
 	register_icall (mono_get_throw_corlib_exception (), "mono_arch_throw_corlib_exception", 
 				 "void ptr", TRUE);
-#endif
 	register_icall (mono_thread_get_undeniable_exception, "mono_thread_get_undeniable_exception", "object", FALSE);
 	register_icall (mono_thread_interruption_checkpoint, "mono_thread_interruption_checkpoint", "void", FALSE);
 	register_icall (mono_thread_force_interruption_checkpoint, "mono_thread_force_interruption_checkpoint", "void", FALSE);

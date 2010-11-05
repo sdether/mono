@@ -68,15 +68,25 @@ namespace System.ServiceModel.Discovery
 		#region service contract implementation
 		
 		// IDiscoveryProxyContract11
+		
+		FindRequestContext find_context;
+		
 		IAsyncResult IDiscoveryProxyContract11.BeginFind (MessageContracts11.FindRequest message, AsyncCallback callback, object state)
 		{
-			return OnBeginFind (new DefaultFindRequestContext (message.Body.ToFindCriteria ()), callback, state);
+			if (find_context != null)
+				throw new InvalidOperationException ("Another async Find operation is ongoing");
+			find_context = new DefaultFindRequestContext (message.Body.ToFindCriteria ());
+			return OnBeginFind (find_context, callback, state);
 		}
 
 		MessageContracts11.FindResponse IDiscoveryProxyContract11.EndFind (IAsyncResult result)
 		{
 			OnEndFind (result);
-			throw new NotImplementedException ();
+			var l = new MessageContracts11.FindResponse11 ();
+			foreach (var edm in find_context.Endpoints)
+				l.Add (new EndpointDiscoveryMetadata11 (edm));
+			find_context = null;
+			return new MessageContracts11.FindResponse () { Body = l };
 		}
 
 		IAsyncResult IDiscoveryProxyContract11.BeginResolve (MessageContracts11.ResolveRequest message, AsyncCallback callback, object state)
@@ -93,13 +103,20 @@ namespace System.ServiceModel.Discovery
 		// IDiscoveryProxyContractApril2005
 		IAsyncResult IDiscoveryProxyContractApril2005.BeginFind (MessageContractsApril2005.FindRequest message, AsyncCallback callback, object state)
 		{
-			return OnBeginFind (new DefaultFindRequestContext (message.Body.ToFindCriteria ()), callback, state);
+			if (find_context != null)
+				throw new InvalidOperationException ("Another async Find operation is ongoing");
+			find_context = new DefaultFindRequestContext (message.Body.ToFindCriteria ());
+			return OnBeginFind (find_context, callback, state);
 		}
 
 		MessageContractsApril2005.FindResponse IDiscoveryProxyContractApril2005.EndFind (IAsyncResult result)
 		{
 			OnEndFind (result);
-			throw new NotImplementedException ();
+			var l = new MessageContractsApril2005.FindResponseApril2005 ();
+			foreach (var edm in find_context.Endpoints)
+				l.Add (new EndpointDiscoveryMetadataApril2005 (edm));
+			find_context = null;
+			return new MessageContractsApril2005.FindResponse () { Body = l };
 		}
 
 		IAsyncResult IDiscoveryProxyContractApril2005.BeginResolve (MessageContractsApril2005.ResolveRequest message, AsyncCallback callback, object state)
@@ -116,13 +133,20 @@ namespace System.ServiceModel.Discovery
 		// IDiscoveryProxyContractCD1
 		IAsyncResult IDiscoveryProxyContractCD1.BeginFind (MessageContractsCD1.FindRequest message, AsyncCallback callback, object state)
 		{
-			return OnBeginFind (new DefaultFindRequestContext (message.Body.ToFindCriteria ()), callback, state);
+			if (find_context != null)
+				throw new InvalidOperationException ("Another async Find operation is ongoing");
+			find_context = new DefaultFindRequestContext (message.Body.ToFindCriteria ());
+			return OnBeginFind (find_context, callback, state);
 		}
 
 		MessageContractsCD1.FindResponse IDiscoveryProxyContractCD1.EndFind (IAsyncResult result)
 		{
 			OnEndFind (result);
-			throw new NotImplementedException ();
+			var l = new MessageContractsCD1.FindResponseCD1 ();
+			foreach (var edm in find_context.Endpoints)
+				l.Add (new EndpointDiscoveryMetadataCD1 (edm));
+			find_context = null;
+			return new MessageContractsCD1.FindResponse () { Body = l };
 		}
 
 		IAsyncResult IDiscoveryProxyContractCD1.BeginResolve (MessageContractsCD1.ResolveRequest message, AsyncCallback callback, object state)
@@ -318,26 +342,63 @@ namespace System.ServiceModel.Discovery
 
 		protected override IAsyncResult OnBeginFind (FindRequestContext findRequestContext, AsyncCallback callback, object state)
 		{
-			if (find_delegate == null)
-				find_delegate = new Action<FindRequestContext> (Find);
-			return find_delegate.BeginInvoke (findRequestContext, callback, state);
+			// FIXME: this is a workaround for (similar to) bug #633945.
+			switch (Environment.OSVersion.Platform) {
+			case PlatformID.Unix:
+			case PlatformID.MacOSX:
+				if (find_delegate == null)
+					find_delegate = new Action<FindRequestContext> (Find);
+				return find_delegate.BeginInvoke (findRequestContext, callback, state);
+			default:
+				Find (findRequestContext);
+				var result = new TempAsyncResult (null, state);
+				if (callback != null)
+					callback (result);
+				return result;
+			}
 		}
 
 		protected override void OnEndFind (IAsyncResult result)
 		{
-			find_delegate.EndInvoke (result);
+			// FIXME: this is a workaround for (similar to) bug #633945.
+			switch (Environment.OSVersion.Platform) {
+			case PlatformID.Unix:
+			case PlatformID.MacOSX:
+				find_delegate.EndInvoke (result);
+				break;
+			default:
+				break;
+			}
 		}
 
 		protected override IAsyncResult OnBeginResolve (ResolveCriteria resolveCriteria, AsyncCallback callback, object state)
 		{
-			if (resolve_delegate == null)
-				resolve_delegate = new Func<ResolveCriteria,EndpointDiscoveryMetadata> (Resolve);
-			return resolve_delegate.BeginInvoke (resolveCriteria, callback, state);
+			// FIXME: this is a workaround for (similar to) bug #633945.
+			switch (Environment.OSVersion.Platform) {
+			case PlatformID.Unix:
+			case PlatformID.MacOSX:
+				if (resolve_delegate == null)
+					resolve_delegate = new Func<ResolveCriteria,EndpointDiscoveryMetadata> (Resolve);
+				return resolve_delegate.BeginInvoke (resolveCriteria, callback, state);
+			default:
+				var ret = Resolve (resolveCriteria);
+				var result = new TempAsyncResult (ret, state);
+				if (callback != null)
+					callback (result);
+				return result;
+			}
 		}
 
 		protected override EndpointDiscoveryMetadata OnEndResolve (IAsyncResult result)
 		{
-			return resolve_delegate.EndInvoke (result);
+			// FIXME: this is a workaround for (similar to) bug #633945.
+			switch (Environment.OSVersion.Platform) {
+			case PlatformID.Unix:
+			case PlatformID.MacOSX:
+				return resolve_delegate.EndInvoke (result);
+			default:
+				return (EndpointDiscoveryMetadata) ((TempAsyncResult) result).ReturnValue;
+			}
 		}
 
 		void Find (FindRequestContext context)

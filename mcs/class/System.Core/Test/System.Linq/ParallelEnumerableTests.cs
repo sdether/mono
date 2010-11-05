@@ -472,7 +472,6 @@ namespace MonoTests.System.Linq
 				var q = from b in CreateBazCollection ().AsParallel()
 						orderby b.Age ascending, b.Name descending
 						select b;
-				//var q = CreateBazCollection ().AsParallel ().OrderBy ((b) => b.Age).ThenByDescending ((b) => b.Name);
 	
 				var expected = new [] {
 					new Baz ("jb", 7),
@@ -481,11 +480,7 @@ namespace MonoTests.System.Linq
 					new Baz ("jb", 25),
 					new Baz ("reg", 28),
 				};
-				
-				foreach (Baz b in q) {
-					Console.Write(b.Name + ", " + b.Age + "; ");
-				}
-	
+
 				AssertAreSame (expected, q);
 			});
 		}
@@ -545,11 +540,11 @@ namespace MonoTests.System.Linq
 		[TestAttribute]
 		public void ElementAtTestCase()
 		{
-			ParallelTestHelper.Repeat (() => {
-					Assert.AreEqual(1, baseEnumerable.AsParallel ().ElementAt(0), "#1");
-					Assert.AreEqual(51, baseEnumerable.AsParallel ().ElementAt(50), "#2");
-					Assert.AreEqual(489, baseEnumerable.AsParallel ().ElementAt(488), "#3");
-			});
+			//ParallelTestHelper.Repeat (() => {
+					Assert.AreEqual(1, baseEnumerable.AsParallel ().AsOrdered ().ElementAt(0), "#1");
+					Assert.AreEqual(51, baseEnumerable.AsParallel ().AsOrdered ().ElementAt(50), "#2");
+					Assert.AreEqual(489, baseEnumerable.AsParallel ().AsOrdered ().ElementAt(488), "#3");
+			//});
 		}
 
 		[Test]

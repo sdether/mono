@@ -158,20 +158,6 @@ namespace Microsoft.CSharp.RuntimeBinder
 					IgnorePrivateMembers = false
 				};
 
-				var core_types = Compiler.TypeManager.InitCoreTypes ();
-				importer.Initialize ();
-
-				// I don't think dynamically loaded assemblies can be used as dynamic
-				// expression without static type to be loaded first
-				// AppDomain.CurrentDomain.AssemblyLoad += (sender, e) => { throw new NotImplementedException (); };
-
-				// Import all currently loaded assemblies
-				var ns = Compiler.GlobalRootNamespace.Instance;
-				foreach (System.Reflection.Assembly a in AppDomain.CurrentDomain.GetAssemblies ()) {
-					ns.AddAssemblyReference (a);
-					importer.ImportAssembly (a, ns);
-				}
-
 				var reporter = new Compiler.Report (ErrorPrinter.Instance) {
 					WarningLevel = 0
 				};
@@ -180,8 +166,29 @@ namespace Microsoft.CSharp.RuntimeBinder
 					IsRuntimeBinder = true
 				};
 
-				Compiler.TypeManager.InitCoreTypes (cc, core_types);
-				Compiler.TypeManager.InitOptionalCoreTypes (cc);
+				IList<Compiler.PredefinedTypeSpec> core_types = null;
+				// HACK: To avoid re-initializing static TypeManager types, like string_type
+				if (!Compiler.RootContext.EvalMode) {
+					core_types = Compiler.TypeManager.InitCoreTypes ();
+				}
+
+				importer.Initialize ();
+
+				// I don't think dynamically loaded assemblies can be used as dynamic
+				// expression without static type to be loaded first
+				// AppDomain.CurrentDomain.AssemblyLoad += (sender, e) => { throw new NotImplementedException (); };
+
+				// Import all currently loaded assemblies
+				var ns = cc.GlobalRootNamespace;
+				foreach (System.Reflection.Assembly a in AppDomain.CurrentDomain.GetAssemblies ()) {
+					ns.AddAssemblyReference (a);
+					importer.ImportAssembly (a, ns);
+				}
+
+				if (!Compiler.RootContext.EvalMode) {
+					Compiler.TypeManager.InitCoreTypes (cc, core_types);
+					Compiler.TypeManager.InitOptionalCoreTypes (cc);
+				}
 
 				dc = new DynamicContext (cc);
 			}
@@ -190,7 +197,7 @@ namespace Microsoft.CSharp.RuntimeBinder
 		}
 
 		//
-		// Creates mcs expression from dynamic method object
+		// Creates mcs expression from dynamic object
 		//
 		public Compiler.Expression CreateCompilerExpression (CSharpArgumentInfo info, DynamicMetaObject value)
 		{
@@ -201,22 +208,28 @@ namespace Microsoft.CSharp.RuntimeBinder
 				return Compiler.Constant.CreateConstantFromValue (ImportType (value.LimitType), null, Compiler.Location.Null);
 			}
 
-			bool is_compile_time;
+			//
+			// No type details provider, go with runtime type
+			//
+			if (info == null)
+				return new Compiler.RuntimeValueExpression (value, ImportType (value.RuntimeType));
 
-			if (info != null) {
-				if ((info.Flags & CSharpArgumentInfoFlags.Constant) != 0) {
-					return Compiler.Constant.CreateConstantFromValue (ImportType (value.LimitType), value.Value, Compiler.Location.Null);
-				}
+			//
+			// Value is known to be a type
+			//
+			if ((info.Flags & CSharpArgumentInfoFlags.IsStaticType) != 0)
+				return new Compiler.TypeExpression (ImportType ((Type) value.Value), Compiler.Location.Null);
 
-				if ((info.Flags & CSharpArgumentInfoFlags.IsStaticType) != 0)
-					return new Compiler.TypeExpression (ImportType ((Type) value.Value), Compiler.Location.Null);
+			//
+			// Use compilation time type when type was known not to be dynamic during compilation
+			//
+			Type value_type = (info.Flags & CSharpArgumentInfoFlags.UseCompileTimeType) != 0 ? value.Expression.Type : value.LimitType;
+			var type = ImportType (value_type);
 
-				is_compile_time = (info.Flags & CSharpArgumentInfoFlags.UseCompileTimeType) != 0;
-			} else {
-				is_compile_time = false;
-			}
+			if ((info.Flags & CSharpArgumentInfoFlags.Constant) != 0)
+				return Compiler.Constant.CreateConstantFromValue (type, value.Value, Compiler.Location.Null);
 
-			return new Compiler.RuntimeValueExpression (value, ImportType (is_compile_time ? value.LimitType : value.RuntimeType));
+			return new Compiler.RuntimeValueExpression (value, type);
 		}
 
 		//

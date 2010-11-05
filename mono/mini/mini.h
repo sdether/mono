@@ -230,6 +230,10 @@ typedef struct {
 	 * to native code, or the method which was JITted.
 	 */
 	MonoMethod *method;
+	/*
+	 * If ji->method is a gshared method, this is the actual method instance.
+	 */
+	MonoMethod *actual_method;
 	/* The domain containing the code executed by this frame */
 	MonoDomain *domain;
 	gboolean managed;
@@ -1276,6 +1280,7 @@ enum {
 #define OP_PCONST OP_I8CONST
 #define OP_PADD OP_LADD
 #define OP_PADD_IMM OP_LADD_IMM
+#define OP_PAND_IMM OP_LAND_IMM
 #define OP_PSUB OP_LSUB
 #define OP_PMUL OP_LMUL
 #define OP_PMUL_IMM OP_LMUL_IMM
@@ -1298,6 +1303,7 @@ enum {
 #define OP_PCONST OP_ICONST
 #define OP_PADD OP_IADD
 #define OP_PADD_IMM OP_IADD_IMM
+#define OP_PAND_IMM OP_IAND_IMM
 #define OP_PSUB OP_ISUB
 #define OP_PMUL OP_IMUL
 #define OP_PMUL_IMM OP_IMUL_IMM

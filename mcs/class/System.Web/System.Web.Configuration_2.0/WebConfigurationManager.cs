@@ -63,10 +63,13 @@ namespace System.Web.Configuration {
 		}
 		
 		const int SAVE_LOCATIONS_CHECK_INTERVAL = 6000; // milliseconds
+		const int SECTION_CACHE_LOCK_TIMEOUT = 200; // milliseconds
 
 		static readonly char[] pathTrimChars = { '/' };
 		static readonly object suppressAppReloadLock = new object ();
 		static readonly object saveLocationsCacheLock = new object ();
+		
+		// See comment for the cacheLock field at top of System.Web.Caching/Cache.cs
 		static readonly ReaderWriterLockSlim sectionCacheLock;
 		
 #if !TARGET_J2EE
@@ -225,14 +228,11 @@ namespace System.Web.Configuration {
 		
 		static void ConfigurationSaveHandler (_Configuration sender, ConfigurationSaveEventArgs args)
 		{
-			bool locked = false;
 			try {
 				sectionCacheLock.EnterWriteLock ();
-				locked = true;
 				sectionCache.Clear ();
 			} finally {
-				if (locked)
-					sectionCacheLock.ExitWriteLock ();
+				sectionCacheLock.ExitWriteLock ();
 			}
 			
 			lock (suppressAppReloadLock) {
@@ -442,7 +442,6 @@ namespace System.Web.Configuration {
 			int cacheKey;
 			bool pathPresent = !String.IsNullOrEmpty (path);
 			string locationPath = null;
-			bool locked = false;
 
 			if (pathPresent)
 				locationPath = "location_" + path;
@@ -453,7 +452,6 @@ namespace System.Web.Configuration {
 			
 			try {
 				sectionCacheLock.EnterReadLock ();
-				locked = true;
 				
 				object o;
 				if (pathPresent) {
@@ -469,8 +467,7 @@ namespace System.Web.Configuration {
 				if (sectionCache.TryGetValue (baseCacheKey, out o))
 					return o;
 			} finally {
-				if (locked)
-					sectionCacheLock.ExitReadLock ();
+				sectionCacheLock.ExitReadLock ();
 			}
 
 			string cachePath = null;
@@ -589,8 +586,9 @@ namespace System.Web.Configuration {
 			HttpContext ctx = HttpContext.Current;
 			HttpRequest req = ctx != null ? ctx.Request : null;
 			string physPath = req != null ? VirtualPathUtility.AppendTrailingSlash (MapPath (req, path)) : null;
+			string appDomainPath = HttpRuntime.AppDomainAppPath;
 			
-			if (physPath != null && !physPath.StartsWith (HttpRuntime.AppDomainAppPath, StringComparison.Ordinal))
+			if (physPath != null && appDomainPath != null && !physPath.StartsWith (appDomainPath, StringComparison.Ordinal))
 				inAnotherApp = true;
 			
 			string dir;
@@ -687,27 +685,31 @@ namespace System.Web.Configuration {
 		static void AddSectionToCache (int key, object section)
 		{
 			object cachedSection;
-			bool locked = false;
 
 			try {
-				sectionCacheLock.EnterUpgradeableReadLock ();
-				locked = true;
+				if (!sectionCacheLock.TryEnterUpgradeableReadLock (SECTION_CACHE_LOCK_TIMEOUT))
+					return;
 					
 				if (sectionCache.TryGetValue (key, out cachedSection) && cachedSection != null)
 					return;
 
-				bool innerLocked = false;
 				try {
-					sectionCacheLock.EnterWriteLock ();
-					innerLocked = true;
+					if (!sectionCacheLock.TryEnterWriteLock (SECTION_CACHE_LOCK_TIMEOUT))
+						return;
 					sectionCache.Add (key, section);
 				} finally {
-					if (innerLocked)
+					try {
 						sectionCacheLock.ExitWriteLock ();
+					} catch (SynchronizationLockException) {
+						// we can ignore it here
+					}
 				}
 			} finally {
-				if (locked)
+				try {
 					sectionCacheLock.ExitUpgradeableReadLock ();
+				} catch (SynchronizationLockException) {
+					// we can ignore it here
+				}
 			}
 		}
 		

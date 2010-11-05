@@ -65,6 +65,8 @@
 #define SHARED_EXT ".dll"
 #elif ((defined(__ppc__) || defined(__powerpc__) || defined(__ppc64__)) || defined(__MACH__)) && !defined(__linux__)
 #define SHARED_EXT ".dylib"
+#elif defined(__APPLE__) && defined(TARGET_X86) && !defined(__native_client_codegen__)
+#define SHARED_EXT ".dylib"
 #else
 #define SHARED_EXT ".so"
 #endif
@@ -1067,7 +1069,7 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 
 	find_symbol (sofile, globals, "blob", (gpointer*)&blob);
 
-	if (((MonoAotFileInfo*)file_info)->gc_name_index != -1) {
+	if (usable && ((MonoAotFileInfo*)file_info)->gc_name_index != -1) {
 		char *gc_name = (char*)&blob [((MonoAotFileInfo*)file_info)->gc_name_index];
 		const char *current_gc_name = mono_gc_get_gc_name ();
 
@@ -1213,6 +1215,17 @@ load_aot_module (MonoAssembly *assembly, gpointer user_data)
 			amodule->got [1] = amodule->got;
 		}
 	}
+
+#ifdef HAVE_SGEN_GC
+	{
+		MonoJumpInfo ji;
+
+		memset (&ji, 0, sizeof (ji));
+		ji.type = MONO_PATCH_INFO_GC_CARD_TABLE_ADDR;
+
+		amodule->got [2] = mono_resolve_patch_target (NULL, mono_get_root_domain (), NULL, &ji, FALSE);
+	}
+#endif
 
 	/*
 	 * Since we store methoddef and classdef tokens when referring to methods/classes in
@@ -2276,6 +2289,7 @@ decode_patch (MonoAotModule *aot_module, MonoMemPool *mp, MonoJumpInfo *ji, guin
 	case MONO_PATCH_INFO_GENERIC_CLASS_INIT:
 	case MONO_PATCH_INFO_MONITOR_ENTER:
 	case MONO_PATCH_INFO_MONITOR_EXIT:
+	case MONO_PATCH_INFO_GC_CARD_TABLE_ADDR:
 		break;
 	case MONO_PATCH_INFO_RGCTX_FETCH: {
 		gboolean res;

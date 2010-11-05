@@ -473,14 +473,19 @@ namespace System.Reflection.Emit
 		[ComVisible (true)]
 		public ConstructorBuilder DefineDefaultConstructor (MethodAttributes attributes)
 		{
-			Type parent_type;
+			Type parent_type, old_parent_type;
 
 			if (parent != null)
 				parent_type = parent;
 			else
 				parent_type = pmodule.assemblyb.corlib_object_type;
 
+			old_parent_type = parent_type;
 			parent_type = parent_type.InternalResolve ();
+			/*This avoids corlib to have self references.*/
+			if (parent_type == typeof (object) || parent_type == typeof (ValueType))
+				parent_type = old_parent_type;
+
 			ConstructorInfo parent_constructor =
 				parent_type.GetConstructor (
 					BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
@@ -1891,6 +1896,20 @@ namespace System.Reflection.Emit
 			else
 				return res;
 		}
+
+		internal TypeCode GetTypeCodeInternal () {
+			if (parent == pmodule.assemblyb.corlib_enum_type) {
+				for (int i = 0; i < num_fields; ++i) {
+					FieldBuilder f = fields [i];
+					if (!f.IsStatic)
+						return Type.GetTypeCode (f.FieldType);
+				}
+				throw new InvalidOperationException ("Enum basetype field not defined");
+			} else {
+				return Type.GetTypeCodeInternal (this);
+			}
+		}
+
 
 		void _TypeBuilder.GetIDsOfNames([In] ref Guid riid, IntPtr rgszNames, uint cNames, uint lcid, IntPtr rgDispId)
 		{
